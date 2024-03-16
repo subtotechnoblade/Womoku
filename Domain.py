@@ -310,7 +310,7 @@ class Domain:
         given by save if child.visits >= child.parent.visits * self.delta
         :return: None
         """
-        # Todo, Important: remember that the tree_root.children should have the chosen node poped out, if it isn't we will have problems
+
         previous_size = self.size
         child_path = self.node_paths.get(key)
         used_virtual_loss = key[1]
