@@ -1,9 +1,11 @@
+import gc
 import time
 import math
 import random
 import numpy as np
 from tqdm import tqdm
 import onnxruntime as rt
+from Domain import Domain
 
 import womoku as gf
 from womoku import Womoku
@@ -30,9 +32,9 @@ class Node(object):
 
         self.children = []
 
-        self.prob_prior = np.array([prob_prior], dtype=np.float16)  # P
-        self.visits = 0  # N
-        self.value = np.array([0], dtype=np.float16)
+        self.prob_prior = prob_prior
+        self.visits = 0
+        self.value = 0
 
         self.is_terminal = terminal
 
@@ -40,18 +42,22 @@ class Node(object):
 class MCTS:
     def __init__(self,
                  game, session, worker_id=0,
-                 move=None,
-                 explore=False,
-                 max_nodes_infer=gf.MAX_NODES_INFER,
+                 explore: bool = False,
+                 is_apply_dirichlet: bool = False,
+                 max_nodes_infer: int = gf.MAX_NODES_INFER,
+                 domain: [None, Domain] = None,
+
                  c_puct=4.5, tau=1.0):
         self.game = deepcopy(game)
+        self.domain = domain
 
         self.root = Node(state=np.array(game.board, dtype=np.int8),
                          move_history=self.game.moves.copy(),
-                         move=move,
+                         move=self.game.moves[-1] if self.game.moves else None,
                          parent=None)  # starting state doesn't have a move
         self.max_nodes_infer = max_nodes_infer
         self.explore = explore
+        self.is_apply_dirichlet = is_apply_dirichlet if not explore else True
         self.c_puct = c_puct
         self.tau = tau  # temperature control for exploration, stochastic exploration
 
@@ -59,7 +65,6 @@ class MCTS:
         self.sess = session
         self.input_name = self.sess.get_inputs()[0].name
 
-        # self.virtual_loss = np.array([1], dtype=np.int8)
         self.virtual_loss = 1
 
         self._expand_root(self.root, cutoff=gf.WIDTH * gf.HEIGHT)
@@ -84,14 +89,14 @@ class MCTS:
                 return child
             PUCT_score = (child.value / child.visits) + (
                     child.prob_prior * ((child.parent.visits ** 0.5) / (child.visits + 1)) *
-                    (self.c_puct + (math.log10((child.parent.visits + 19653) / 19652))))
+                    (self.c_puct + (np.log10((child.parent.visits + 19653) / 19652))))
             if PUCT_score > best_score:
                 best_score = PUCT_score
                 best_child = child
         return best_child
 
     def _expand_root(self, node, cutoff=gf.HEIGHT * gf.WIDTH) -> None:
-        winning_moves = gf.find_term_expand(node.state)  # be careful of this line, copying can be very important
+        winning_moves = gf.find_term_expand(node.state)
 
         if len(winning_moves) == 0:
             raw_policy, raw_value = self.sess.run(["policy", "value"],
@@ -101,7 +106,7 @@ class MCTS:
                                      game_state=node.state,
                                      cutoff=cutoff)
 
-            self._backprop_virtual(node, -raw_value[0][0])
+            self._backprop(node, -raw_value[0][0])
         else:
             policy = []
             for move, is_win in winning_moves:
@@ -140,8 +145,6 @@ class MCTS:
 
     def _expand(self, node, policy, cutoff=gf.HEIGHT * gf.WIDTH) -> None:
         next_player = gf.get_next_player_histo(np.array(node.move_history, dtype=np.int8))
-        if node.children:
-            print("Something went wrong, if this feature was applied, we would be screwed")
         for child_id, (move, prior_prob, policy_terminal) in enumerate(policy):
             new_state = np.copy(node.state)  # fastest shallow copy
             new_state[move[1]][move[0]] = next_player
@@ -233,19 +236,22 @@ class MCTS:
                     node.parent.value -= self.virtual_loss
                     node.parent.visits += 1
                 node.visits += 1
-                node.value -= self.virtual_loss
+                node.value -= 1
 
-                if node.is_terminal is None and node not in batch_nodes:
-                    batch_nodes.add(node)
-                    # prop_node = node
-                    # while prop_node is not None:
-                    #     prop_node.visits += 1
-                    #     prop_node.value -= self.virtual_loss
-                        # prop_node = prop_node.parent
+                if node.is_terminal is None:
+                    if node not in batch_nodes:
+                        batch_nodes.add(node)
+                    else:
+                        prop_node = node
+                        while prop_node is not None:
+                            prop_node.visits -= 1
+                            prop_node.value += self.virtual_loss
+                            prop_node = prop_node.parent
+                        break
                 elif node.is_terminal is not None:
-                    self._backprop_virtual(node, abs(node.is_terminal))
-                # else:
-                #     break
+                    self._backprop(node, abs(node.is_terminal))
+                else:
+                    break
 
             policies_values = [(None, 0) for _ in range(len(batch_nodes))]
             batch_inference_boards = {}
@@ -264,8 +270,7 @@ class MCTS:
                         elif not is_win:
                             policy.append([move, 1, None])
                     policies_values[policy_id] = (policy, -1)
-            # print(len(batch_inference_boards))
-            # raise ValueError
+
             if len(batch_inference_boards) != 0:
                 raw_policies, raw_values = self.sess.run(["policy", "value"],
                                                          {self.input_name: np.array(
@@ -286,23 +291,22 @@ class MCTS:
                     self._expand(node, policy, cutoff=gf.WIDTH * gf.HEIGHT)
                     self._backprop_virtual(node, value)
                 else:
-                    self._backprop_virtual(node, abs(node.is_terminal))
+                    self._backprop(node, abs(node.is_terminal))
 
             if iteration_limit:
                 bar.update(1)
             else:
                 bar.update(time.time() - loop_start_time)
             iterations += 1
-
         move_probs = []
         move_visits = []
         for i, node in enumerate(self.root.children):
             move_probs.append(
-                [node.move, None, node.visits, self.root.visits, node.value[0], node.prob_prior[0]])
+                [node.move, None, node.visits, self.root.visits, node.value, node.prob_prior])
             move_visits.append(node.visits)
-        move_visits = np.array(move_visits)
+        move_visits = np.array(move_visits).reshape(-1)
 
-        move_probs_visits = softmax((1.0/1.1) * np.log(np.array(move_visits) + 1e-10))
+        move_probs_visits = softmax(1.0 * np.log(np.array(move_visits) + 1e-10))
         selection_visits = softmax((1.0 / self.tau) * np.log(move_visits + 1e-10))
         for i, prob in enumerate(move_probs_visits):
             move_probs[i][1] = prob
@@ -340,9 +344,9 @@ class MCTS:
                     best_node = child
             if best_node is not None:
                 top_line.append(
-                    [best_node.move, best_node.value[0] / best_node.visits, best_node.visits,
-                     best_node.value[0],
-                     best_node.prob_prior[0], best_node.is_terminal])
+                    [best_node.move, best_node.value / best_node.visits, best_node.visits,
+                     best_node.value,
+                     best_node.prob_prior, best_node.is_terminal])
             else:
                 break
             node = best_node
@@ -350,15 +354,19 @@ class MCTS:
         print(top_line)
         print()
 
-        return move, move_probs
+        return move, move_probs, self.root
 
-    def update_tree(self, game, move, delete=True):
+    def update_tree(self, game, move):
+        if self.domain:
+            raise ValueError(f"Wrong Update method, use update_tree_domain")
+
         del self.game
         self.game = deepcopy(game)
-
-        if move not in [node.move for node in self.root.children]:
+        # Add a node if the
+        if move not in set([node.move for node in self.root.children]):
             print(f"Create node for new position")
-            self.root = Node(state=np.array(self.game.board, dtype=np.int8), move=move, move_history=self.game.moves.copy())
+            self.root = Node(state=np.array(self.game.board, dtype=np.int8), move=move, parent=None,
+                             move_history=self.game.moves.copy())
             self._expand_root(self.root)
             return
 
@@ -368,21 +376,45 @@ class MCTS:
                 move_count += 1
                 print(f"Pruned {len(self.root.children) - 1} nodes")
                 self.root = node
-                self.root.state = node.state
-                self.root.children = node.children
                 self.root.parent = None
-                # if game.moves != node.move_history:
-                #     print(f"Game moves and node moves are not the same")
-                #     print(game.moves)
-                #     print(node.move)
-                self.root.move_history = node.move_history
-            # if move_count > 1:
-            #     raise ValueError("Found duplicate when pruning, something went wrong")
-            # if delete:
-            #     del node
+            del node
+
         if move_count == 0:
             raise ValueError(f"Couldn't prune because node.move_history != game.moves")
+        gc.collect()
 
+    def update_tree_domain(self, game, move, domain_key=None):
+        if domain_key is None or self.domain is None:
+            raise ValueError(
+                f"Wrong Update method, use update_tree without the domain if domain key is {domain_key} and self.domain is {self.domain} ")
+        del self.game
+        self.game = deepcopy(game)
+
+        if move not in set([node.move for node in self.root.children]):
+            print(f"Create node for new position")
+            self.root = Node(state=np.array(self.game.board, dtype=np.int8), move=move,
+                             move_history=self.game.moves.copy())
+            self._expand_root(self.root)
+            return
+
+        chosen_node = None
+        for node_id, node in enumerate(self.root.children):
+            if move == node.move:
+                chosen_node = self.root.children.pop(node_id)
+                break
+        if chosen_node is None:
+            raise ValueError(f"The played move wasn't in the root's children")
+        # self.root.children shouldn't have the chosen node anymore
+
+        self.domain.update_domain(tree_root=self.root, chosen_node=chosen_node, key=domain_key)
+        gc.collect()
+
+        self.root = chosen_node
+        self.root.parent = None
+
+
+# pseudo code
+# we define self.domain to be
 
 if __name__ == "__main__":
     from glob import glob
@@ -420,63 +452,4 @@ if __name__ == "__main__":
     game.print_board()
     mcts1 = MCTS(game=game, session=session,
                  c_puct=4, explore=False)
-    print(mcts1.run(iteration_limit=250))
-
-    # import pickle
-    #
-    # with open("alphazero/domain/domain1.pickle", "wb") as f:
-    #     pickle.dump(mcts1.root, f)
-    # with open("alphazero/domain/domain1.pickle", "rb") as f:
-    #     tree = pickle.load(f)
-    # for node in tree.children:
-    #     print(node.children)
-
-    # mcts2 = MCTS(game=game, session=session,
-    #             c_puct=4, explore=False)
-
-    # won_player = -1
-    #
-    # while won_player == -1:
-    #     if gf.get_next_player(np.array(game.board)) == -1:
-    #         move, line = mcts1.run(time_limit=None, iteration_limit=800)
-    #     else:
-    #         move, line = mcts2.run(time_limit=None, iteration_limit=800)
-    #     print(move, line)
-    #     gf.prob_to_board(line, game.board)
-    #
-    #     game.put(move)
-    #     game.print_board()
-    #
-    #     won_player = gf.check_won(np.array(game.board), move)
-    #     if won_player != -1:
-    #         print(won_player)
-    #
-    #
-    #     mcts1.update_tree(game, move)
-    #     mcts2.update_tree(game, move)
-
-    # game = Womoku()
-    # mcts = MCTS(game, session=session,)
-    # won_player = -1
-    # while won_player == -1:
-    #     if gf.get_next_player(np.array(game.board)) == -1:
-    #         valid = False
-    #         while not valid:
-    #             try:
-    #                 x, y = input(f"Move? x,y please no spaces").split(",")
-    #                 iterations = int(input("Iterations??"))
-    #                 x, y = int(x), int(y)
-    #                 move = (x, y)
-    #                 valid = True
-    #             except:
-    #                 print("stop being dumb and put an actual move")
-    #     else:
-    #         # iterations = 5000
-    #
-    #         move, line = mcts.run(iteration_limit=iterations)
-    #         print(move, line)
-    #     game.put(move)
-    #     game.print_board()
-    #
-    #     mcts.update_tree(game, move)
-    #     won_player = gf.check_won(np.array(game.board), move)
+    print(mcts1.run(iteration_limit=500))

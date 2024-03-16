@@ -96,24 +96,50 @@ def human_move(position, input_board):
 w, h = gf.WIDTH, gf.HEIGHT
 
 game = Womoku()
-# game.put((7, 7))
-
-# game.put((7, 7))
-# game.put((6, 8))
-# game.put((7, 7))
-# game.put((8, 8))
-
-# game.put((6, 8))
-# game.put((8, 8))
 # game.put((6, 6))
+# game.put((7, 7))
+# game.put((8, 6))
+# game.put((7, 6))
+# game.put((7, 5))
+# game.put((5, 7))
 # game.put((6, 7))
+# game.put((6, 5))
 # game.put((8, 7))
+# game.put((8, 5))
+# game.put((8, 9))
+# game.put((7, 8))
+# game.put((8, 10))
+# game.put((8, 8))
+# game.put((8, 4))
+# game.put((6, 8))
+# game.put((9, 3))
+# game.put((10, 2))
+# game.put((9, 8))
+# game.put((7, 10))
 # game.put((7, 9))
+# game.put((5, 8))
+# game.put((4, 8))
+# game.put((6, 9))
+#
+# game.put((7, 7))
+# game.put((5, 7))
+# game.put((8, 6))
+# game.put((6, 8))
+# game.put((7,9))
+# game.put((6, 6))
+# game.put((7, 5))
 # game.put((7, 8))
 # game.put((9, 7))
-# game.put((7, 7))
-# game.put((7, 5))
-# game.put((6, 2))
+# game.put((10, 8))
+# game.put((6, 4))
+# game.put((5, 3))
+# game.put((8, 8))
+# game.put((6, 10))
+# game.put((8, 7))
+# game.put((6, 7))
+# game.put((6, 9))
+# game.put((5, 6))
+
 generation = max([int(path.split("\\")[-1][0:]) for path in glob("alphazero/models/*")])
 sess_options = rt.SessionOptions()
 # generation = 8
@@ -125,9 +151,9 @@ sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
 sess_options.optimized_model_filepath = f"alphazero/onnx_optimized/{generation}.onnx"
 session = rt.InferenceSession(f"alphazero/onnx_models/{generation}.onnx",
                               providers=gf.PROVIDERS, sess_options=sess_options)
-mcts = MCTS(game, session, explore=False, c_puct=4)
+mcts = MCTS(game, session, explore=False, c_puct=4, max_nodes_infer=2)
 
-total_iterations = 500
+total_iterations = 1500
 time_limit = None
 
 move_list = []
@@ -136,7 +162,7 @@ mode = 1
 # mode 3, human_player_move = 1, for human against human
 
 # mode 1 for the bottom
-human_player_move = 2
+human_player_move = 1
 # 1 for human becoming the first move
 # 2 for human to become the second move
 # 3 for AI to play against itself

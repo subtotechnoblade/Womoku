@@ -93,5 +93,6 @@ if __name__ == "__main__":
     for worker_id in range(workers):
         p = mp.Process(target=Augment_data, args=(worker_id, worker_files[worker_id], generation,))
         p.start()
+        jobs.append(p)
     for job in jobs:
         job.join()
