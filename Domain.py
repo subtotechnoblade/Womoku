@@ -1,11 +1,10 @@
 import os
-import gc
 import h5py
 import numpy as np
 from glob import glob
+import gc
 
-from MCTS_virtualloss import Node, softmax
-
+from MCTS_virtualloss import softmax, Node
 
 # HDF5 file would have
 # child indexes # uint32
@@ -16,14 +15,16 @@ from MCTS_virtualloss import Node, softmax
 # sum_value # float 16
 # prop_prior # float16
 
-def Create_domain(generation):
-    with h5py.File(f"Domains/{generation}.h5", "w") as hdf:
-        hdf.create_dataset("moves", shape=(1, 2), maxshape=(None, 2), chunks=True, dtype=np.uint8, compression=1)
+
+
+def Create_domain(path: str) -> None:
+    with h5py.File(path, "w") as hdf:
+        hdf.create_dataset("moves", shape=(1, 2), maxshape=(None, 2), chunks=True, dtype=np.uint8, compression=9)
         hdf.create_dataset("visits", shape=1, maxshape=(None,), chunks=True, dtype=np.uint32,
-                           compression=1)  # node visits
-        hdf.create_dataset("p_v", shape=(1, 2), maxshape=(None, 2), chunks=True, dtype=np.float32, compression=1)
+                           compression=9)  # node visits
+        hdf.create_dataset("p_v", shape=(1, 2), maxshape=(None, 2), chunks=True, dtype=np.float32, compression=9)
         hdf.create_dataset("child_indexes", shape=(1, 225), maxshape=(None, 225), chunks=True,
-                           dtype=np.uint32, compression=1)  # index 0 can never be a child as it is the true root
+                           dtype=np.uint32, compression=9)  # index 0 can never be a child as it is the true root
 
 
 def _nodes_to_stats(stats: list, node: Node, starting_index: int = 0, delta: float = 0.15):
@@ -51,29 +52,49 @@ def _nodes_to_stats(stats: list, node: Node, starting_index: int = 0, delta: flo
 
 
 class Domain:
-    def __init__(self, generation: int = None, c_puct: float = 4, tau: float = 1, virtual_loss: float = 1,
+    def __init__(self, path: str = None,
+                 generation: int = max([path.split("\\")[-1][0] for path in glob("alphazero/onnx_models/*.onnx")]),
+                 c_puct: float = 4,
+                 tau: float = 1,
+                 virtual_loss: float = 1,
                  delta: float = 0.1):
-        if generation is None:
-            generation = max([path.split("\\")[-1][0] for path in glob("alphazero/onnx_models/*.onnx")])
+        # path overwrites generation
+        # Sanity checks
+        if path is None and generation is None:
+            raise ValueError(f"Both path and generation is None")
+
+        self.path = path
+        if path is None:
+            self.path = f"alphazero/domain/{generation}.h5"
+        if not os.path.exists(self.path):
+            Create_domain(self.path)
+
         self.c_puct = c_puct
         self.tau = tau
-        if not os.path.exists(f"Domains/{generation}.h5"):
-            Create_domain(generation)
-        self.path = f"Domains/{generation}.h5"
 
         with h5py.File(self.path, "r", locking=True) as hdf:
             self.size = hdf["moves"].shape[0]
         self.delta = delta
-        self.virtual_loss = np.array([0, virtual_loss], dtype=np.float16)
+        self.virtual_loss = np.array([0, virtual_loss], dtype=np.float32)
         self.visit_inc = np.array([1], dtype=np.uint32)
         self.node_paths = dict()
 
     def get_path(self) -> str:
         return self.path
 
+    def get_move(self, node: int) -> (int, int):
+        with h5py.File(self.path, mode="r", locking=True) as hdf:
+            move = (*hdf["moves"][node],)
+        return move
+
+    def get_node_visits(self, node: int) -> int:
+        with h5py.File(self.path, mode="r", locking=True) as hdf:
+            visits = hdf["visits"][node]
+        return visits
+
     def domain_expansion(self, inc) -> None:
         """
-        :param inc: Number of additions to the array, ie the amount of 0's to add to the array/domain to extend it
+        :param inc: Number of additions to the array, i.e., the amount of 0's to add to the array/domain to extend it
         :return: None
         """
         self.size += inc
@@ -84,16 +105,21 @@ class Domain:
             hdf["child_indexes"].resize((self.size, 225))
             hdf.close()
 
-    def tree_to_domain(self, true_root: Node) -> None:
+    def tree_to_domain(self, true_root: Node, overwrite=False) -> None:
         """
         :param true_root: The starting node of the tree, not the normal root but the very first one in the game Womoku
+        :param overwrite: Whether to overwrite the current domain or not
         :return: None
         """
-        if true_root.move is not None:
+        if true_root.move is not None or len(true_root.children) != 225:
             raise ValueError(
                 f"Root given isn't the true root, the true root shouldn't have a move as it's children should be the starting moves")
         elif self.size > 1:
             raise ValueError(f"Domain has already been created, to add more nodes use update_domain")
+
+        if overwrite and os.path.exists(self.path):
+            os.remove(self.path)
+            Create_domain(self.path)
         stats = []
         _nodes_to_stats(stats, true_root, delta=self.delta)
         gc.collect()
@@ -108,7 +134,6 @@ class Domain:
             hdf["child_indexes"][:to_index] = child_indexes
             del moves, visits, p_v, child_indexes, stats
             gc.collect()
-            # hdf.close()
 
     def traverse(self, node: int, child_path: list, c_puct: [None, float], use_virtual: bool = False) -> int:
         """
@@ -155,7 +180,7 @@ class Domain:
     def stochastic_sampling(self, hdf: h5py.File, node: int, child_path: list, tau: [None, float] = None,
                             explore: bool = True):
         """
-        :param hdf: The hdf class for opening the h5 file
+        :param hdf: H5py class for opening the .h5 file
         :param node: starting node index of the domain
         :param child_path: A list to append the domain child to
         :param tau: Temp for controlling the sharpening/flattening of the distribution
@@ -187,8 +212,8 @@ class Domain:
         child_path.append(child)
         return child
 
-    def get_moves(self, sampling: list[dict[str:int]], worker_id: int, c_puct: [None, float] = None,
-                  tau: [None, float] = None) -> list[list[int]]:
+    def sample(self, sampling: dict[str:int], worker_id: int, c_puct: [None, float] = None,
+               tau: [None, float] = None) -> list[list[int]]:
         """
         :param sampling: dict with keys s, d
         where each key represents the number of times we sample from the root
@@ -198,12 +223,12 @@ class Domain:
         If puct is specified, use True and False to determine whether to use virtualloss for different paths
         If not second sampling method is specified and first is a number, puct sampling is used until a node with no visits is found
         There can only be two keys for each dict
+        :param worker_id: Used to save the node path into self.node_paths
         :param c_puct: If None self.c_puct is used
         :param tau: If None self.tau will be used
         :return: A list of lists containing the node path to the sampled node
         """
         # Sanity Checks
-        # Make sure self.size is updated everytime we update the domain
         if self.size == 0:
             raise ValueError(f"Domain size of 0 cannot be sampled from because there aren't any nodes")
         if not isinstance(worker_id, int):
@@ -211,83 +236,101 @@ class Domain:
         if (worker_id, False) in self.node_paths or (worker_id, True) in self.node_paths:
             raise ValueError(
                 f"Worker {worker_id} has already sampled from this domain, call close worker to delete it from the dict")
+        if len(sampling) > 2:
+            raise ValueError(f"Len of sampling keys must be 1 or 2")
+        if None not in sampling.values():
+            raise ValueError(
+                f"Must sample to a node without children, if not we can't update domain, there's going to be overlap")
 
         batch_paths, batch_nodes = [], set()
         if tau is None:
             tau = self.tau
         if c_puct is None:
             c_puct = self.c_puct
-        for dict_sample in sampling:
-            if len(dict_sample) > 2:
-                raise ValueError(f"Len of sampling keys must be 1 or 2")
-            while True:
-                node = 0
-                child_path = []
-                is_use_virtual_loss = False
-                if len(dict_sample.keys()) == 1:
-                    key1 = [*dict_sample.keys()][0]
-                    sampling_times = dict_sample[key1]
-                    if key1 == "puct" and sampling_times is None:
-                        raise ValueError(
-                            f"Can't have None for puct sampling, use True for Talse for using virtual loss")
-                    if sampling_times is None or (key1 == "puct" and sampling_times is not None):
-                        if key1 in ["s", "d"]:
-                            with h5py.File(self.path, mode="r", locking=True) as hdf:
-                                while True:
-                                    node = self.stochastic_sampling(hdf, node, tau=tau, child_path=child_path,
-                                                                    explore=True if key1 == "s" else False)
-                                    if hdf["visits"][node] == 0 or np.sum(hdf["child_indexes"][node]) == 0:
-                                        break
-                        elif key1 == "puct":
-                            node = self.traverse(node, child_path=child_path, c_puct=c_puct, use_virtual=sampling_times)
-                            is_use_virtual_loss = sampling_times
-                    elif key1 in ["s", "d"]:
-                        puct_sampling = True
+        while True:
+            node = 0
+            child_path = []
+            is_use_virtual_loss = False
+            if len(sampling.keys()) == 1:
+                key1 = [*sampling.keys()][0]
+                sampling_times = sampling[key1]
+                if key1 == "puct" and sampling_times is None:
+                    raise ValueError(
+                        f"Can't have None for puct sampling, use True for Talse for using virtual loss")
+                if sampling_times is None or (key1 == "puct" and sampling_times is not None):
+                    if key1 in ["s", "d"]:
                         with h5py.File(self.path, mode="r", locking=True) as hdf:
-                            for _ in range(sampling_times):
+                            while True:
                                 node = self.stochastic_sampling(hdf, node, tau=tau, child_path=child_path,
                                                                 explore=True if key1 == "s" else False)
                                 if hdf["visits"][node] == 0 or np.sum(hdf["child_indexes"][node]) == 0:
-                                    puct_sampling = False
                                     break
-                        if puct_sampling:
-                            node = self.traverse(node, child_path, c_puct)
-
-                    if node not in batch_nodes:
-                        batch_paths.append(child_path)
-                        batch_nodes.add(node)
-                        self.node_paths[(worker_id, is_use_virtual_loss)] = child_path
-                        break
-                    else:
-                        continue
-
-                # Handle the case where there is two keys given
-                key1, key2 = dict_sample.keys()
-                sampling_times, _ = dict_sample.values()
-                with h5py.File(self.path, mode="r", locking=True) as hdf:
-                    continue_sampling = True
-                    if key1 in ["s", "d"]:
+                    elif key1 == "puct":
+                        node = self.traverse(node, child_path=child_path, c_puct=c_puct, use_virtual=sampling_times)
+                        is_use_virtual_loss = sampling_times
+                elif key1 in ["s", "d"]:
+                    puct_sampling = True
+                    with h5py.File(self.path, mode="r", locking=True) as hdf:
                         for _ in range(sampling_times):
                             node = self.stochastic_sampling(hdf, node, tau=tau, child_path=child_path,
                                                             explore=True if key1 == "s" else False)
                             if hdf["visits"][node] == 0 or np.sum(hdf["child_indexes"][node]) == 0:
-                                continue_sampling = False
+                                puct_sampling = False
                                 break
-                    if continue_sampling and (("s" == key2 and "d" == key1) or ("d" == key2 and "s" == key1)):
-                        while True:
-                            node = self.stochastic_sampling(hdf, node, tau=tau, child_path=child_path,
-                                                            explore=True if key1 == "s" else False)
-                            if hdf["visits"][node] == 0 or np.sum(hdf["child_indexes"][node]) == 0:
-                                break
-                    elif key1 == key2:
-                        raise ValueError(f"Two keys where the same")
-                    self.node_paths[(worker_id, False)] = child_path
+                    if puct_sampling:
+                        node = self.traverse(node, child_path, c_puct)
 
-                    if node not in batch_nodes:
-                        batch_paths.append(child_path)
-                        batch_nodes.add(node)
-                        break
-        return batch_paths
+                if node not in batch_nodes:
+                    batch_paths.append(child_path)
+                    batch_nodes.add(node)
+                    self.node_paths[(worker_id, is_use_virtual_loss)] = child_path
+                    break
+                else:
+                    continue
+
+            key1, key2 = sampling.keys()
+            sampling_times, _ = sampling.values()
+            with h5py.File(self.path, mode="r", locking=True) as hdf:
+                continue_sampling = True
+                if key1 in ["s", "d"]:
+                    for _ in range(sampling_times):
+                        node = self.stochastic_sampling(hdf, node, tau=tau, child_path=child_path,
+                                                        explore=True if key1 == "s" else False)
+                        if hdf["visits"][node] == 0 or np.sum(hdf["child_indexes"][node]) == 0:
+                            continue_sampling = False
+                            break
+                if continue_sampling and (("s" == key2 and "d" == key1) or ("d" == key2 and "s" == key1)):
+                    while True:
+                        node = self.stochastic_sampling(hdf, node, tau=tau, child_path=child_path,
+                                                        explore=True if key1 == "s" else False)
+                        if hdf["visits"][node] == 0 or np.sum(hdf["child_indexes"][node]) == 0:
+                            break
+                elif key1 == key2:
+                    raise ValueError(f"Two keys where the same")
+                self.node_paths[(worker_id, False)] = child_path
+
+                if node not in batch_nodes:
+                    batch_paths.append(child_path)
+                    batch_nodes.add(node)
+                    break
+        return batch_paths[0]
+
+    def get_policy(self, domain_node) -> [[(int, int), float, float, float, float], ...]:
+        # We assume that we derive the domain from enough iterations
+        with h5py.File(self.path, mode="r", locking=True) as hdf:
+            children = hdf["child_indexes"][domain_node]
+            children = children[children > 0]
+
+            line = [0] * len(children)
+
+            visits = [0] * len(children)
+            for i, child in enumerate(children):
+                visits[i] = hdf["visits"][child]
+            policy = softmax(1.0 * np.log(visits) + 1e-10)
+
+            for i, child in enumerate(children):
+                line[i] = [(*hdf["moves"][child],), policy[i], 0, 0, 0, 0]
+        return line
 
     def backprop_virtual(self, key: [None, (str, str)], sum_value: float, sum_visits: float):
         value_inc = np.array([0, sum_value + self.virtual_loss], dtype=np.float32)
@@ -305,7 +348,7 @@ class Domain:
                 hdf["visits"][node] += sum_visits
                 value_inc *= -1
 
-    def update_domain(self, tree_root, chosen_node, key: [None, (str, str)], delta: [None, int] = None) -> None:
+    def update_domain(self, tree_root, chosen_node, key: [None, (str, str)], delta: [None, float] = None) -> None:
         """
         :param tree_root: Node(class) from the tree search with MCTS_virtialloss
         :param key: The key for self.node_paths
@@ -313,6 +356,7 @@ class Domain:
         given by save if child.visits >= child.parent.visits * self.delta
         :return: None
         """
+        delta = self.delta if delta is None else delta
 
         previous_size = self.size
         child_path = self.node_paths.get(key)
@@ -322,13 +366,14 @@ class Domain:
             raise KeyError(
                 "There are no child paths associated with this key, make sure that they info saved when sampling is accurate")
 
-        # attempt the backprop, backprop_virtual
-        sum_visits, sum_value = tree_root.visits, tree_root.value
-        if not used_virtual_loss:
-            self.backprop(key, sum_value=sum_value, sum_visits=sum_visits)
-        else:
-            self.backprop_virtual(key, sum_value=sum_value, sum_visits=sum_visits)
-
+        sub_domain = []
+        while True:
+            _nodes_to_stats(stats=sub_domain, node=tree_root, starting_index=self.size, delta=delta)
+            if len(sub_domain) > 1:
+                break
+            sub_domain = []
+            delta -= 0.1
+            delta = delta if delta > 0 else 0
         # starting_index = self.size
         # when expanding the domain to fit more node, it is interesting because the sub_domain[0](domain index) == node_paths[-1] (domain_index) thus we have to -1 from size, but since we need to fit the chosen_node from the tree, we need to +1 thus cancels out to len(sub_domain)
         sub_domain = []
@@ -337,6 +382,13 @@ class Domain:
         # remember that self.size is also updated here, thus self.size = self.size + new_length
         overlapped_node = sub_domain[0]
         sub_domain = sub_domain[1:]
+
+        # attempt the backprop, backprop_virtual
+        sum_visits, sum_value = tree_root.visits, tree_root.value
+        if not used_virtual_loss:
+            self.backprop(key, sum_value=sum_value, sum_visits=sum_visits)
+        else:
+            self.backprop_virtual(key, sum_value=sum_value, sum_visits=sum_visits)
 
         with h5py.File(self.path, mode="r+", locking=True) as hdf:
             assert np.array_equal(overlapped_node[0], hdf["moves"][domain_root])
@@ -389,3 +441,27 @@ class Domain:
 
     def __repr__(self):
         return f"There are {self.size} nodes"
+
+
+if __name__ == "__main__":
+    import womoku as gf
+    from womoku import Womoku
+    import onnxruntime as rt
+    from MCTS_virtualloss import MCTS
+
+    generation = max([path.split("\\")[-1][0] for path in glob("alphazero/onnx_models/*.onnx")])
+
+    sess_options = rt.SessionOptions()
+    sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.intra_op_num_threads = 2
+    sess_options.inter_op_num_threads = 1
+
+    session = rt.InferenceSession(f"alphazero/onnx_models/{generation}.onnx",
+                                  providers=gf.PROVIDERS, sess_options=sess_options)
+
+    game = Womoku()
+    mcts = MCTS(session=session, game=game, explore=True)
+    mcts.run(iteration_limit=1000)
+
+    domain = Domain(path=None, generation=generation)
+    domain.tree_to_domain(mcts.root)
