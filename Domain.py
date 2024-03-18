@@ -6,6 +6,7 @@ from glob import glob
 
 from MCTS_virtualloss import Node, softmax
 
+
 # HDF5 file would have
 # child indexes # uint32
 # parent indexes # create a list and add the node's index to that list for parent indexes
@@ -154,6 +155,7 @@ class Domain:
     def stochastic_sampling(self, hdf: h5py.File, node: int, child_path: list, tau: [None, float] = None,
                             explore: bool = True):
         """
+        :param hdf: The hdf class for opening the h5 file
         :param node: starting node index of the domain
         :param child_path: A list to append the domain child to
         :param tau: Temp for controlling the sharpening/flattening of the distribution
@@ -201,6 +203,7 @@ class Domain:
         :return: A list of lists containing the node path to the sampled node
         """
         # Sanity Checks
+        # Make sure self.size is updated everytime we update the domain
         if self.size == 0:
             raise ValueError(f"Domain size of 0 cannot be sampled from because there aren't any nodes")
         if not isinstance(worker_id, int):
@@ -258,6 +261,7 @@ class Domain:
                     else:
                         continue
 
+                # Handle the case where there is two keys given
                 key1, key2 = dict_sample.keys()
                 sampling_times, _ = dict_sample.values()
                 with h5py.File(self.path, mode="r", locking=True) as hdf:
@@ -292,7 +296,6 @@ class Domain:
                 hdf["p_v"][node] += value_inc
                 hdf["pc_visits"][node] += sum_visits
                 sum_value *= -1
-            # hdf.close()
 
     def backprop(self, key: [None, (str, str)], sum_value: float, sum_visits: float):
         value_inc = np.array([0, sum_value], dtype=np.float32)

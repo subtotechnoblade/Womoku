@@ -7,7 +7,7 @@ alpha = 1e-4
 def SE_Block(inputs, num_filters, ratio):
     squeeze = tf.keras.layers.GlobalAveragePooling3D()(inputs)
     excitation = tf.keras.layers.Dense(units=num_filters / ratio)(squeeze)
-    excitation = tf.keras.layers.Activation('relu')(excitation)
+    excitation = tf.keras.layers.Activation("relu")(excitation)
     excitation = tf.keras.layers.Dense(units=num_filters)(excitation)
     excitation = tf.keras.layers.Activation('sigmoid')(excitation)
     excitation = tf.keras.layers.Reshape([1, 1, 1, num_filters])(excitation)
@@ -87,14 +87,14 @@ class GroupConv2D(tf.keras.layers.Layer):
         out = tf.concat(feature_map_list, axis=-1)
         return out
 
-tf.keras.layers.PReLU()
+
 def ResNeXt_BottleNeck(inputs, filters, strides, groups):
     shortcut = tf.keras.layers.Conv2D(filters=2 * filters,
                                       kernel_size=(1, 1),
                                       strides=strides,
                                       padding="same")(inputs)
 
-    x = tf.keras.layers.Conv2D(filters=2*filters,
+    x = tf.keras.layers.Conv2D(filters=2 * filters,
                                kernel_size=(1, 1),
                                strides=1,
                                padding="same",
@@ -108,7 +108,7 @@ def ResNeXt_BottleNeck(inputs, filters, strides, groups):
                     groups=groups,
                     kernel_regularizer=tf.keras.regularizers.L2(alpha))(x)
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Activation(tf.keras.layers.LeakyReLU(0.2))(x)
+    x = tf.keras.layers.Activation("relu")(x)
     x = SE_Block(inputs=x, num_filters=filters, ratio=1)
 
     x = tf.keras.layers.Conv2D(filters=2 * filters,
@@ -119,7 +119,9 @@ def ResNeXt_BottleNeck(inputs, filters, strides, groups):
 
     output = tf.keras.layers.Add()([x, shortcut])
     output = tf.keras.layers.BatchNormalization()(output)
-    output = tf.keras.layers.LeakyReLU(0.1)(output)
+    output = tf.keras.layers.LeakyReLU(0.15)(output)
+    #     output = tf.keras.layers.LeakyReLU(0.1)(output)
+    #     output = tf.keras.layers.Activation("relu")(output)
     return output
 
 
@@ -133,43 +135,43 @@ def build_ResNeXt_block(inputs, filters, strides, groups, repeat_num):
                                groups=groups)
         if i % 2 != 0:
             # x = tf.keras.layers.GaussianDropout(rate=0.1)(x)
-            x = tf.keras.layers.Dropout(0.15)(x)
+            x = tf.keras.layers.Dropout(0.1)(x)
 
     return x
 
 
 def Get_2dresnext(shape, policy_shape, filters_per_group, groups, blocks):
-    inputs = tf.keras.Input(shape, dtype=tf.float16)
+    inputs = tf.keras.Input(shape, dtype=tf.float32)
 
-    #specific for Gomoku because
+    # specific for Gomoku because
     # eye_4 = tf.keras.layers.Conv2D(filters=16, kernel_size=(4, 4), padding="same")(inputs)
     # eye_4 = SE_Block(eye_4, num_filters=16, ratio=1)
     eye_3 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding="same")(inputs)
-    eye_3 = SE_Block(eye_3, num_filters=64, ratio=1)
-    eye_2 = tf.keras.layers.Conv2D(filters=64, kernel_size=(2, 2), padding="same")(inputs)
-    eye_2 = SE_Block(eye_2, num_filters=64, ratio=2)
+    eye_3 = SE_Block(eye_3, num_filters=64, ratio=2)
+    # eye_2 = tf.keras.layers.Conv2D(filters=64, kernel_size=(2, 2), padding="same")(inputs)
+    # eye_2 = SE_Block(eye_2, num_filters=64, ratio=2)
 
-    eyes = tf.keras.layers.concatenate([eye_3, eye_2])
-    eyes = tf.keras.layers.BatchNormalization()(eyes)
-    eyes = tf.keras.layers.LeakyReLU(alpha=0.25)(eyes)
+    # eyes = tf.keras.layers.concatenate([eye_3, eye_2])
+    eyes = tf.keras.layers.BatchNormalization()(eye_3)
+    eyes = tf.keras.layers.PReLU()(eyes)
 
-    x = build_ResNeXt_block(inputs=eyes, filters=128, strides=1, groups=2, repeat_num=1)
+    x = build_ResNeXt_block(inputs=eyes, filters=64, strides=1, groups=2, repeat_num=1)
     x = build_ResNeXt_block(inputs=x, filters=filters_per_group, strides=1, groups=groups, repeat_num=blocks)
 
-    policy_head = tf.keras.layers.Conv2D(6, (1, 1), strides=(1, 1), padding="same",
+    policy_head = tf.keras.layers.Conv2D(6, (3, 3), strides=(1, 1), padding="same",
                                          kernel_regularizer=tf.keras.regularizers.L2(alpha))(x)
     policy_head = tf.keras.layers.BatchNormalization()(policy_head)
-    policy_head = tf.keras.layers.Activation(tf.keras.layers.LeakyReLU(0.15))(policy_head)
+    policy_head = tf.keras.layers.PReLU()(policy_head)
 
     policy_head = tf.keras.layers.Flatten()(policy_head)
     # policy_head = tf.keras.layers.Dense(640,
     #                                     activation="relu",
     #                                     kernel_regularizer=tf.keras.regularizers.L2(alpha)
     #                                     )(policy_head)
-    policy_head = tf.keras.layers.Dense(512,
-                                        activation="relu",
-                                        kernel_regularizer=tf.keras.regularizers.L2(alpha/2)
-                                        )(policy_head)
+    # policy_head = tf.keras.layers.Dense(512,
+    #                                     activation="relu",
+    #                                     kernel_regularizer=tf.keras.regularizers.L2(alpha / 2)
+    #                                     )(policy_head)
     policy_head = tf.keras.layers.Dense(448,
                                         activation="relu",
                                         # kernel_regularizer=tf.keras.regularizers.L2(alpha)
@@ -182,40 +184,26 @@ def Get_2dresnext(shape, policy_shape, filters_per_group, groups, blocks):
                                         # kernel_initializer="he_normal",
                                         kernel_regularizer=tf.keras.regularizers.L2(alpha))(x)
     value_head = tf.keras.layers.BatchNormalization()(value_head)
-    value_head = tf.keras.layers.Activation(tf.keras.layers.LeakyReLU(0.15))(value_head)
+    value_head = tf.keras.layers.LeakyReLU(0.1)(value_head)
 
     value_head = tf.keras.layers.Flatten()(value_head)
-    value_head = tf.keras.layers.Dropout(0.075)(value_head)
+    value_head = tf.keras.layers.Dropout(0.1)(value_head)
     # value_head = tf.keras.layers.Dense(512, activation="relu",
     #                                    kernel_regularizer=tf.keras.regularizers.L2(alpha))(value_head)
-    value_head = tf.keras.layers.Dense(256, activation="relu", kernel_regularizer=tf.keras.regularizers.L2(alpha/1.5))(value_head)
-    value_head = tf.keras.layers.Dense(128, activation="relu",
-                                       # kernel_regularizer=tf.keras.regularizers.L2(alpha/3)
+    value_head = tf.keras.layers.Dense(256, activation="relu",
+                                       kernel_regularizer=tf.keras.regularizers.L2(alpha)
                                        )(value_head)
-    # value_head = tf.keras.layers.Dense(64, activation="relu",
-    #                                    # kernel_regularizer=tf.keras.regularizers.L2(alpha)
-    #                                    )(value_head)
+    value_head = tf.keras.layers.Dense(128, activation="relu",
+                                                kernel_regularizer=tf.keras.regularizers.L2(alpha))(value_head)
+    value_head = tf.keras.layers.Dense(96, activation="relu")(value_head)
+
     value_head = tf.keras.layers.Dense(1, activation="tanh", dtype='float32', name="value")(value_head)
 
     outputs = {"policy": policy_head, "value": value_head}
     # Create the model
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
 
-    # initial_sparsity = 0.0
-    # final_sparsity = 0.75
-    # begin_step = 100
-    # end_step = 500
-    # pruning_params = {
-    #     'pruning_schedule': tfmot.sparsity.keras.PolynomialDecay(
-    #         initial_sparsity=initial_sparsity,
-    #         final_sparsity=final_sparsity,
-    #         begin_step=begin_step,
-    #         end_step=end_step)
-    # }
-    # model = tfmot.sparsity.keras.prune_low_magnitude(model, **pruning_params)
-    # pruning_callback = tfmot.sparsity.keras.UpdatePruningStep()
-
-    model.compile(optimizer=tf.keras.optimizers.Nadam(learning_rate=3e-4),
+    model.compile(optimizer=tf.keras.optimizers.Nadam(learning_rate=1e-4),
                   loss={"policy": "binary_crossentropy", "value": "mse"},
                   loss_weights={"policy": 1, "value": 1},
                   metrics=["accuracy", "binary_crossentropy", "mse"])
@@ -239,6 +227,6 @@ if __name__ == "__main__":
     # x = GroupConv2D(inputs,4, 4, (3, 3), groups=4)
     # print(x.get_prunable_weights())
 
-    model = Get_2dresnext((4, 15, 15, 1), gf.WIDTH * gf.HEIGHT, filters_per_group=96, groups=4, blocks=4)
+    model = Get_2dresnext((4, 15, 15, 1), gf.WIDTH * gf.HEIGHT, filters_per_group=32, groups=4, blocks=4)
     # model.save_weights(f"../alphazero/models/0.h5", save_format="h5", overwrite=True)
     model.save(f"../alphazero/models/0", overwrite=True, save_traces=True)

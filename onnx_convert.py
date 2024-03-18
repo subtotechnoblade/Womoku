@@ -53,25 +53,25 @@ def Convert2onnx(tf_model, generation):
     print(f"Saved model at alphazero/onnx_model/{generation}.onnx")
     os.remove(f'alphazero/tmp/{generation}.onnx')
 
-    # if not gf.USE_GPU:
-    #     sess_options = rt.SessionOptions()
-    #     sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
-    #     sess_options.optimized_model_filepath = f"alphazero/onnx_optimized/{generation}.onnx"
-    #     sess_options.intra_op_num_threads = 2
-    #     sess_options.inter_op_num_threads = 1
-    #     session = rt.InferenceSession(f"alphazero/onnx_models/{generation}.onnx",
-    #                                   providers=gf.PROVIDERS, sess_options=sess_options)
-    #     input_name = session.get_inputs()[0].name
-    #     data = np.random.randint(low=-1, high=2, size=(gf.MAX_NODES_INFER, *gf.SHAPE[1:]), dtype=np.int8)
-    #     for _ in range(100):
-    #         x = session.run(["policy", "value"], {input_name: data})
-    #
-    #     start = time.time()
-    #     for _ in range(500):
-    #         x = session.run(["policy", "value"], {input_name: data})
-    #     time_taken = time.time() - start
-    #     print(f"It took {time_taken} seconds for 500 * {gf.MAX_NODES_INFER} steps")
-    #     print(f"Throughput is {(500 * gf.MAX_NODES_INFER) / time_taken} steps per second")
+    if not gf.USE_GPU:
+        sess_options = rt.SessionOptions()
+        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.optimized_model_filepath = f"alphazero/onnx_optimized/{generation}.onnx"
+        sess_options.intra_op_num_threads = 2
+        sess_options.inter_op_num_threads = 1
+        session = rt.InferenceSession(f"alphazero/onnx_models/{generation}.onnx",
+                                      providers=gf.PROVIDERS, sess_options=sess_options)
+        input_name = session.get_inputs()[0].name
+        data = np.random.randint(low=-1, high=2, size=(gf.MAX_NODES_INFER, *gf.SHAPE[1:]), dtype=np.int8)
+        for _ in range(100):
+            x = session.run(["policy", "value"], {input_name: data})
+
+        start = time.time()
+        for _ in range(500):
+            x = session.run(["policy", "value"], {input_name: data})
+        time_taken = time.time() - start
+        print(f"It took {time_taken} seconds for 500 * {gf.MAX_NODES_INFER} steps")
+        print(f"Throughput is {(500 * gf.MAX_NODES_INFER) / time_taken} steps per second")
 
 def Convert2onnx_GPU(tf_model, generation):
     print(f"Converting Generation {generation}")
