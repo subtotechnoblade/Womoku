@@ -1,5 +1,6 @@
 import numpy as np
-from numba import njit, jit, int8, void
+from numba import njit, types
+import numba as nb
 
 USE_GPU = False
 if USE_GPU:
@@ -102,7 +103,7 @@ def get_next_player(input_board: np.array) -> int:
     :param input_board: the input board, array of shape 15 by 15 representing the current position of the game
     :return: the next player to play
     """
-    return -1 if sum([abs(move) for move in input_board.flat]) % 2 == 0 else 1
+    return -1 if sum([abs(place) for place in input_board.flat]) % 2 == 0 else 1
 
 
 @njit(cache=True, fastmath=True)
@@ -123,20 +124,16 @@ def get_current_player(input_board: np.array) -> int:
     return -get_next_player(input_board)
 
 
-@njit(cache=True, nogil=True, fastmath=True)
-def get_legal_moves(input_board: np.array) -> list:
+@njit([types.List(types.Tuple((nb.int64, nb.int64)))(nb.int8[:, :])], cache=True, nogil=True)
+def get_legal_moves(input_board: np.array):
     """
     :param input_board:
     :return: list of legal moves [(x, y), ...]
     """
-    legal_moves = []
-    moves = np.argwhere(input_board == 0)[:, ::-1]
-    for x, y in moves:
-        legal_moves.append((x, y))
-    return legal_moves
+    return [(x, y) for y, x in np.argwhere(input_board == 0)]
 
 
-@njit(cache=True, nogil=True)
+@njit([types.Set(types.Tuple((nb.int64, nb.int64)))(nb.int8[:, :], nb.int64)], cache=True, nogil=True)
 def get_edge_moves(input_board, player=0):
     edge_moves = set()
     if player == -1:
@@ -223,9 +220,10 @@ def check_won(input_board: np.array, move: tuple) -> int:
     return -2
 
 
-@njit(cache=True, nogil=True, fastmath=True)
+@njit(cache=True, nogil=True)
 def find_term_expand(input_board: np.array, next_player=None) -> list:
     """
+    :param next_player:
     :param input_board:
     :return: The winning moves that the expand method uses to bottleneck the tree
     """
@@ -336,60 +334,8 @@ def get_inference_board_old(input_move_history: np.array, num_previous_moves: in
     return game_state
 
 
-@njit(nogil=True)
-def get_inference_board_numpy(input_move_history: np.array, num_previous_moves: int = NUM_PREVIOUS_MOVES):
-    """
-    :param input_move_history: The move history. [(x, y), ...]
-    :param num_previous_moves: Number of previous moves to add to the game state
-    :return: A specific array of shape (1, num_previous_moves*1 + 1, HEIGHT, WIDTH, 1). Used to train and inference.
-    # np.array([current_player board, black_board, white_board], dtype=np.int8).reshape(((1, num_previous_moves*1 + 1, HEIGHT, WIDTH, 1))
-    #  A specific part for forward and backpropagation
-    """
-    black_board_history = []
-    white_board_history = []
-    # black_board = np.zeros(shape=(HEIGHT, WIDTH), dtype=int8)
-    # white_board = np.zeros(shape=(HEIGHT, WIDTH), dtype=int8)
-    black_board = np.zeros(shape=(HEIGHT, WIDTH), dtype=np.int8)
-    white_board = np.zeros(shape=(HEIGHT, WIDTH), dtype=np.int8)
-
-    for i, [x, y] in enumerate(input_move_history):
-        if i != 0:
-            if (i - 1) % 2 == 0:  # if it is white's turn
-                black_board[y][x] = -1
-                black_board_history.append([[*row] for row in black_board])
-            else:
-                white_board[y][x] = 1
-                white_board_history.append([[*row] for row in white_board])
-
-    move_history = input_move_history[1:]
-
-    current_player = -1 if move_history.shape[0] % 2 == 0 else 1
-
-    current_player_board = np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=int8)
-
-    if len(white_board_history) >= num_previous_moves:
-        white_board = np.array(white_board_history[-num_previous_moves:], dtype=int8)
-    elif len(white_board_history) == 0:
-        white_board = np.zeros(shape=(num_previous_moves, HEIGHT, WIDTH), dtype=int8)
-    else:
-        white_board = np.concatenate((np.zeros(shape=(num_previous_moves - len(white_board_history), HEIGHT, WIDTH),
-                                               dtype=int8), np.array(white_board_history, dtype=int8)))
-
-    if len(black_board_history) >= num_previous_moves:
-        black_board = np.array(black_board_history[-num_previous_moves:], dtype=int8)
-
-    elif len(black_board_history) == 0:
-        black_board = np.zeros(shape=(num_previous_moves, HEIGHT, WIDTH), dtype=int8)
-    else:
-        black_board = np.concatenate((np.zeros(shape=(num_previous_moves - len(black_board_history), HEIGHT, WIDTH),
-                                               dtype=int8), np.array(black_board_history, dtype=int8)))
-
-    game_state = np.concatenate((current_player_board, black_board, white_board), dtype=NP_DTYPE).reshape(
-        (1, num_previous_moves * 2 + 1, HEIGHT, WIDTH, 1))
-    return game_state
-
-
-@njit(cache=True, nogil=True, fastmath=True)
+@njit([nb.int8[:, :, :, :, :](nb.int8[:, :], nb.int64), nb.int16[:, :, :, :, :](nb.int8[:, :], nb.int64)], cache=True,
+      nogil=True, fastmath=True)
 def get_inference_board(input_move_history: np.array, num_previous_moves: int = NUM_PREVIOUS_MOVES):
     inference_board = []
     board = [[0 for _ in range(WIDTH)] for _ in range(HEIGHT)]
@@ -399,22 +345,24 @@ def get_inference_board(input_move_history: np.array, num_previous_moves: int = 
             board[y][x] = -1
         else:
             board[y][x] = 1
-        inference_board.append([[*row] for row in board])  # the fastest way to deepcopy knowing the structure of the list
+        inference_board.append(
+            [[*row] for row in board])  # the fastest way to deepcopy knowing the structure of the list
 
     current_player = 1 if input_move_history.shape[0] % 2 == 0 else -1
     num_placed_moves = len(inference_board)
     if num_placed_moves >= num_previous_moves:
-        inference_board = np.array(inference_board, dtype=np.int8)[-num_previous_moves:]
-        return np.concatenate((np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=np.int8), inference_board)).reshape(
+        inference_board = np.array(inference_board, dtype=NP_DTYPE)[-num_previous_moves:]
+        return np.concatenate(
+            (np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=NP_DTYPE), inference_board)).reshape(
             SHAPE)
     elif num_placed_moves < num_previous_moves and num_placed_moves != 0:
         inference_board = np.array(inference_board, dtype=np.int8)
-        return np.concatenate((np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=np.int8),
-                               np.zeros(shape=(num_previous_moves - num_placed_moves, HEIGHT, WIDTH), dtype=np.int8),
+        return np.concatenate((np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=NP_DTYPE),
+                               np.zeros(shape=(num_previous_moves - num_placed_moves, HEIGHT, WIDTH), dtype=NP_DTYPE),
                                inference_board)).reshape(SHAPE)
     else:
-        return np.concatenate((np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=np.int8),
-                               np.zeros(shape=(num_previous_moves, HEIGHT, WIDTH), dtype=np.int8))).reshape(SHAPE)
+        return np.concatenate((np.full(shape=(1, HEIGHT, WIDTH), fill_value=current_player, dtype=NP_DTYPE),
+                               np.zeros(shape=(num_previous_moves, HEIGHT, WIDTH), dtype=NP_DTYPE))).reshape(SHAPE)
 
 
 @njit(cache=True, nogil=True, fastmath=True)
@@ -426,10 +374,10 @@ def parse_policy(raw_policy: np.array, game_state: np.array, cutoff: int or None
     #  top moves are then re-normalized to sum to 1
     :return:
     """
-    raw_policy = raw_policy.reshape(HEIGHT * WIDTH)
+    raw_policy = raw_policy[0]
     policy = []
     # given an array of shape 15, 15 rank the moves x,y by their numbers, including the values [x, y, value]
-    sorted_indices = np.argsort(raw_policy, kind="quicksort")[:: -1]
+    sorted_indices = np.argsort(raw_policy, kind="mergesort")[:: -1]
     sum_values = 0
     for idx in sorted_indices:
         x, y = idx % WIDTH, idx // HEIGHT
@@ -474,32 +422,41 @@ if __name__ == "__main__":
     # llvm.set_option('', '--debug-only=loop-vectorize')
 
     game = Womoku()
-    # game.put((7, 7))
-    # game.put((5, 6))
-    # game.put((7, 8))
-    # game.put((9, 7))
-    # game.put((7, 6))
-    # game.put((6, 6))
-    # game.put((7, 5))
-    # game.put((6, 5))
-    # game.put((7, 4))
-    # game.put((6, 4))
+    game.put((7, 7))
+    game.put((5, 6))
+    game.put((7, 8))
+    game.put((9, 7))
+    game.put((7, 6))
+    game.put((6, 6))
+    game.put((7, 5))
+    game.put((6, 5))
+    game.put((7, 4))
+    game.put((6, 4))
     # game.put((7, 3))
-
+    #
     # game.put((5, 5))
     # game.put((3, 3))
+    game.print_board()
     # game.put(())
     import random
-    dummy_data = [list(set([(random.randint(0, 14), random.randint(0, 14)) for _ in range(250)]))
-                  for _ in range(1)]
+
+    # dummy_data = [list(set([(random.randint(0, 14), random.randint(0, 14)) for _ in range(250)]))
+    #               for _ in range(1)]
+    dummy_data = np.array(game.board, dtype=np.int8)
     s = time.time()
-    for _ in range(1):
-        y = get_inference_board(np.array([(-1, -1)] + dummy_data[0]))
+    for _ in range(10):
+        x = get_legal_moves(dummy_data)
+        get_legal_moves1(dummy_data)
     print(time.time() - s)
     s = time.time()
-    for _ in range(100):
-        y = get_inference_board(np.array([(-1, -1)] + dummy_data[0]))
+    for _ in range(1000):
+        get_legal_moves(dummy_data)
     print(time.time() - s)
+    s = time.time()
+    for _ in range(1000):
+        get_legal_moves1(dummy_data)
+    print(time.time() - s)
+    print(x)
 
     # for y in range(5):
     #     for x in range(5):

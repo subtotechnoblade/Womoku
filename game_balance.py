@@ -12,7 +12,7 @@ for file in files:
         data = np.load(file, allow_pickle=True)
     except:
         data = np.load(file, allow_pickle=False)
-    print(data["inputs"][-1][-1].reshape(-1, 15, 15))
+    # print(data["inputs"][-1][-1].reshape(-1, 15, 15))
     # for move in data["inputs"]:
     #     print(move[-1].reshape(-1, 15, 15))
     # raise ValueError

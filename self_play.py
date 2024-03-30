@@ -1,7 +1,9 @@
 import os
+import gc
 import time
 import random
 import pickle
+import h5py
 import zipfile
 
 import zipfile
@@ -13,8 +15,10 @@ from copy import deepcopy
 import womoku as gf
 from womoku import Womoku
 from MCTS_virtualloss import MCTS
+from Domain import Domain
+from multiprocessing.shared_memory import SharedMemory
 
-from joblib import Parallel, delayed
+# from joblib import Parallel, delayed
 
 try:
     generation = max([int(path.split("\\")[-1][0:]) for path in glob("alphazero/models/*")])
@@ -25,90 +29,96 @@ os.makedirs(f"alphazero/games_unrot/{generation + 1}", exist_ok=True)
 
 
 class Self_play:
-    def __init__(self, session, worker_id, max_generations):
+    def __init__(self, session, domain, worker_id, max_generations):
         self.game = Womoku()
+        self.domain = domain
 
-        self.random_num = random.randrange(0, 10)
-        # if random_num in [1, 1]:
-        #     self.game.put((7, 7))
-        #     self.game.put(random.choice([(6, 6), (7, 6), (7, 5), (8, 6), (5, 6), (6, 5), (8, 5), (9, 6)]))
-        #     self.game.put(random.choice([(6, 1), (7, 1), (8, 1)]))
-        # elif random_num == 3:
-        #     self.game.put((7, 7))
-        #     self.game.put((7, 5))
-        #     self.game.put((6, 1))
-        # elif random_num == 4:
-        #     self.game.put((7, 7))
-        #     self.game.put(random.choice([(6, 6), (7, 6), (8, 6), (5, 6), (6, 5), (8, 5), (9, 6)]))
-        # elif random_num in [5, 6]:
-        #     self.game.put((7, 7))
-        #     self.game.put(random.choice([(6, 6), (7, 6), (7, 5), (8, 6), (5, 6), (6, 5), (8, 5), (9, 6)]))
+        self.random_num = random.randrange(4, 10)
 
         self.max_generations = max_generations
         self.generation = max([int(path.split("\\")[-1][0:]) for path in glob("alphazero/models/*")])
         self.worker_id = worker_id
 
+        max_c_puct = 4.5
+        min_c_puct = 4
+        self.c_puct = max_c_puct - ((max_c_puct - min_c_puct) * (self.generation / self.max_generations))
+
         # max_iterations = 1000
         # min_iterations = 500
         # self.iterations = int(min_iterations + (((max_iterations - min_iterations) * (self.generation / self.max_generations))))
         self.time_limit = 8
-        self.iterations = 1000
-
-        max_c_puct = 4.5
-        min_c_puct = 4
-        c_puct = max_c_puct - ((max_c_puct - min_c_puct) * (self.generation / self.max_generations))
-
-        self.mcts1 = MCTS(self.game, session, c_puct=c_puct, explore=False, tau=1)
-        self.mcts2 = MCTS(self.game, session, c_puct=c_puct, explore=False, tau=1)
+        self.iterations = 10
 
         self.board_state_history = []
         self.board_prob_history = []
 
+        self.use_domain = True
+        if self.use_domain:
+
+            sampled_nodes = self.domain.sample({"puct": True}, worker_id=self.worker_id, c_puct=self.c_puct, tau=1.0)
+            for domain_node in sampled_nodes:
+                self.board_state_history.append(
+                    np.array(gf.get_inference_board(np.array([(-1, -1)] + self.game.moves, dtype=np.int8)).reshape(
+                        gf.SHAPE[1:])))
+                self.game.put(self.domain.get_move(domain_node))
+
+                if (domain_node_visits := self.domain.get_node_visits(
+                        domain_node)) < 0.9 * gf.MAX_NODES_INFER * self.iterations or domain_node_visits < 225:
+                    filler_mcts = MCTS(self.game, session, c_puct=self.c_puct, explore=True, tau=1.0)
+                    _, line = filler_mcts.run(iteration_limit=self.iterations)
+                    self.board_prob_history.append(gf.prob_to_board(line, self.game.board))
+                else:
+                    self.board_prob_history.append(
+                        gf.prob_to_board(self.domain.get_policy(domain_node), self.game.board))
+            with domain.lock:
+                self.domain.backprop_virtual(key=(worker_id, True), sum_value=0, sum_visits=0)
+
+        self.mcts1 = MCTS(self.game, session, domain=domain, c_puct=self.c_puct, explore=True, tau=1.0)
+        self.mcts2 = MCTS(self.game, session, domain=domain, c_puct=self.c_puct, explore=True, tau=1.0)
+        gc.collect()
+
     def play(self, i):
-        output_policy = []
-        output_value = []
         won_player = -2
 
         while won_player == -2:
             if len(self.game.moves) in []:
-                self.iterations = 500
+                self.iterations = 10
                 self.time_limit = None
             else:
-                self.iterations = 800
+                self.iterations = 10
                 self.time_limit = None
 
             self.board_state_history.append(
-                np.array(gf.get_inference_board(np.array([(-1, -1)] + self.game.moves, dtype=np.int8)).reshape(gf.SHAPE[1:])))
+                np.array(gf.get_inference_board(np.array([(-1, -1)] + self.game.moves, dtype=np.int8)).reshape(
+                    gf.SHAPE[1:])))
             # inputs for the NN
-            if gf.get_next_player(np.array(self.game.board, dtype=np.int8)) == -1:
+            if (next_player := gf.get_next_player_histo(np.array(self.game.moves, dtype=np.int8))) == -1:
                 move, line = self.mcts1.run(iteration_limit=self.iterations, time_limit=self.time_limit)
             else:
                 move, line = self.mcts2.run(iteration_limit=self.iterations, time_limit=self.time_limit)
 
-            if self.random_num <= 4:
-                if len(self.game.moves) == 0:
-                    move = (7, 7)
-#                 elif len(self.game.moves) == 1:
-#                     move = random.choice([(6, 6), (7, 6), (7, 5), (8, 6), (5, 6), (6, 5), (8, 5), (9, 6)])
-
-            print(f"Worker:{self.worker_id} | Generation: {self.generation + 1} | Move: {len(self.game.moves)} | Current Player: {gf.get_next_player(np.array(self.game.board, dtype=np.int8))}")
+            print(
+                f"Worker:{self.worker_id} | Generation: {self.generation + 1} | Move: {len(self.game.moves)} | Current Player: {gf.get_next_player(np.array(self.game.board, dtype=np.int8))}")
             print(move, line)
 
             self.board_prob_history.append(gf.prob_to_board(line, self.game.board))  # output π for the NN
             self.game.put(move)
 
             self.game.print_board()
-            self.mcts1.update_tree(self.game, move)
-            self.mcts2.update_tree(self.game, move)
+            if next_player == -1:
+                self.mcts1.update_tree_domain(self.game, move=move, domain_key=(self.worker_id, True))
+                self.mcts2.update_tree(self.game, move)
+            else:
+                self.mcts2.update_tree_domain(self.game, move=move, domain_key=(self.worker_id, True))
+                self.mcts1.update_tree(self.game, move)
 
-            if 5 >= len(self.game.moves) >= 1:
-                self.mcts1.update_hyperparameters(explore=True, c_puct=-0.025, tau=-0.1)
-                self.mcts2.update_hyperparameters(explore=True, c_puct=-0.025, tau=-0.1)
             if len(self.game.moves) > (5 + random.randrange(0, 6)):
-                self.mcts1.tau = 1e-2
-                self.mcts2.tau = 1e-2
+                self.mcts1.tau = 7e-3
+                self.mcts2.tau = 7e-3
 
             won_player = gf.check_won(np.array(self.game.board), move)
+
+        self.domain.close_worker(key=(self.worker_id, True))
 
         if won_player == -1:
             print("Player 1 WON")
@@ -117,6 +127,8 @@ class Self_play:
         else:
             print("Game was a draw")
 
+        output_policy = []
+        output_value = []
         for player, prob_dis in enumerate(self.board_prob_history):
             if player % 2 == 0:  # if black is the current player
                 output_policy.append(prob_dis)
@@ -167,10 +179,11 @@ class Self_play:
                 print(f"Failed try {tries}")
                 print(f'alphazero/games_unrot/{self.generation + 1}/sp_{self.worker_id}_{game_num}.npz')
 
-        del self.game, self.mcts1, self.mcts2, self.board_state_history, self.board_prob_history
+        del self.game, self.mcts1, self.mcts2, self.board_state_history, self.board_prob_history, output_policy, output_value
+        gc.collect()
 
 
-def self_play_func(amount_games, max_generations, worker_id):
+def self_play_func(lock, amount_games, max_generations, worker_id):
     time.sleep(worker_id * 2)
     generation = max([int(path.split("\\")[-1][0:]) for path in glob("alphazero/models/*")])
 
@@ -181,9 +194,10 @@ def self_play_func(amount_games, max_generations, worker_id):
     sess_options.inter_op_num_threads = 1
     session = rt.InferenceSession(f"alphazero/onnx_models/{generation}.onnx",
                                   providers=gf.PROVIDERS, sess_options=sess_options)
+    domain = Domain(generation=generation, lock=lock, delta=0.85)
     for game_num in range(amount_games):
         # try:
-        self_player = Self_play(session, worker_id, max_generations)
+        self_player = Self_play(session, domain, worker_id, max_generations)
         self_player.play(game_num)
         # except:
         #     print(f"MCTS_onnx worker {worker_id} failed")
@@ -202,12 +216,20 @@ def Gen_games(max_generations, total_games, num_workers, timeout=None):
     remaining_games = total_games - played_games
     print(f"Played {played_games} games")
     print(f"Total remaining games: {remaining_games} games")
-    Parallel(n_jobs=num_workers, backend="multiprocessing", timeout=timeout)(
-        delayed(self_play_func)(remaining_games // num_workers, max_generations, i) for i in range(num_workers))
+    lock = mp.Lock()
+    jobs = []
+    for worker_id in range(num_workers):
+        p = mp.Process(target=self_play_func,
+                       args=(lock, remaining_games // num_workers, max_generations, worker_id))
+        p.start()
+        jobs.append(p)
+    for p in jobs:
+        p.join()
 
 
 if __name__ == "__main__":
     from joblib import Parallel, delayed
+    import multiprocessing as mp
     import onnxruntime as rt
 
     workers = 1

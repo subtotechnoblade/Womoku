@@ -153,7 +153,7 @@ session = rt.InferenceSession(f"alphazero/onnx_models/{generation}.onnx",
                               providers=gf.PROVIDERS, sess_options=sess_options)
 mcts = MCTS(game, session, explore=False, c_puct=4, max_nodes_infer=2)
 
-total_iterations = 1500
+total_iterations = 500
 time_limit = None
 
 move_list = []
@@ -162,7 +162,7 @@ mode = 1
 # mode 3, human_player_move = 1, for human against human
 
 # mode 1 for the bottom
-human_player_move = 1
+human_player_move = 2
 # 1 for human becoming the first move
 # 2 for human to become the second move
 # 3 for AI to play against itself

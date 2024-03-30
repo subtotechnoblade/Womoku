@@ -146,8 +146,8 @@ def Get_2dresnext(shape, policy_shape, filters_per_group, groups, blocks):
     # specific for Gomoku because
     # eye_4 = tf.keras.layers.Conv2D(filters=16, kernel_size=(4, 4), padding="same")(inputs)
     # eye_4 = SE_Block(eye_4, num_filters=16, ratio=1)
-    eye_3 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding="same")(inputs)
-    eye_3 = SE_Block(eye_3, num_filters=64, ratio=2)
+    eye_3 = tf.keras.layers.Conv2D(filters=256, kernel_size=(3, 3), padding="same")(inputs)
+    eye_3 = SE_Block(eye_3, num_filters=256, ratio=2)
     # eye_2 = tf.keras.layers.Conv2D(filters=64, kernel_size=(2, 2), padding="same")(inputs)
     # eye_2 = SE_Block(eye_2, num_filters=64, ratio=2)
 
@@ -195,7 +195,7 @@ def Get_2dresnext(shape, policy_shape, filters_per_group, groups, blocks):
                                        )(value_head)
     value_head = tf.keras.layers.Dense(128, activation="relu",
                                                 kernel_regularizer=tf.keras.regularizers.L2(alpha))(value_head)
-    value_head = tf.keras.layers.Dense(96, activation="relu")(value_head)
+    # value_head = tf.keras.layers.Dense(96, activation="relu")(value_head)
 
     value_head = tf.keras.layers.Dense(1, activation="tanh", dtype='float32', name="value")(value_head)
 
@@ -227,6 +227,6 @@ if __name__ == "__main__":
     # x = GroupConv2D(inputs,4, 4, (3, 3), groups=4)
     # print(x.get_prunable_weights())
 
-    model = Get_2dresnext((4, 15, 15, 1), gf.WIDTH * gf.HEIGHT, filters_per_group=32, groups=4, blocks=4)
+    model = Get_2dresnext((4, 15, 15, 1), gf.WIDTH * gf.HEIGHT, filters_per_group=192, groups=4, blocks=4)
     # model.save_weights(f"../alphazero/models/0.h5", save_format="h5", overwrite=True)
     model.save(f"../alphazero/models/0", overwrite=True, save_traces=True)

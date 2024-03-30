@@ -67,11 +67,11 @@ def Convert2onnx(tf_model, generation):
             x = session.run(["policy", "value"], {input_name: data})
 
         start = time.time()
-        for _ in range(500):
+        for _ in range(100):
             x = session.run(["policy", "value"], {input_name: data})
         time_taken = time.time() - start
-        print(f"It took {time_taken} seconds for 500 * {gf.MAX_NODES_INFER} steps")
-        print(f"Throughput is {(500 * gf.MAX_NODES_INFER) / time_taken} steps per second")
+        print(f"It took {time_taken} seconds for 100 * {gf.MAX_NODES_INFER} steps")
+        print(f"Throughput is {(100 * gf.MAX_NODES_INFER) / time_taken} steps per second")
 
 def Convert2onnx_GPU(tf_model, generation):
     print(f"Converting Generation {generation}")

@@ -5,7 +5,6 @@ import random
 import numpy as np
 from tqdm import tqdm
 import onnxruntime as rt
-from Domain import Domain
 
 import womoku as gf
 from womoku import Womoku
@@ -45,7 +44,7 @@ class MCTS:
                  explore: bool = False,
                  is_apply_dirichlet: bool = False,
                  max_nodes_infer: int = gf.MAX_NODES_INFER,
-                 domain: [None, Domain] = None,
+                 domain=None,
 
                  c_puct=4.5, tau=1.0):
         self.game = deepcopy(game)
@@ -120,7 +119,7 @@ class MCTS:
             policy = [[move, probability / sum_prob, terminal] for move, probability, terminal in policy]
 
         # next_player = gf.get_next_player(node.state)
-        next_player = gf.get_next_player_histo(np.array(node.move_history))
+        next_player = gf.get_next_player_histo(np.array(node.move_history, dtype=np.int8))
         # print(next_player)
         # raise ValueError
         for child_id, (move, prior_prob, policy_terminal) in enumerate(policy):
@@ -143,7 +142,7 @@ class MCTS:
         if self.explore:
             self.apply_dirchlet(self.root)
 
-    def _expand(self, node, policy, cutoff=gf.HEIGHT * gf.WIDTH) -> None:
+    def _expand(self, node, policy, cutoff=None) -> None:
         next_player = gf.get_next_player_histo(np.array(node.move_history, dtype=np.int8))
         for child_id, (move, prior_prob, policy_terminal) in enumerate(policy):
             new_state = np.copy(node.state)  # fastest shallow copy
@@ -327,7 +326,7 @@ class MCTS:
                 move = move_probs[0][0]
         else:
             indexes = list(range(len(move_probs)))
-            weights = softmax((1.0 / 1e-4) * np.log(np.array(move_visits) + 1e-10))
+            weights = softmax((1.0 / 1e-4) * np.log(np.array(move_visits + 1e-10)))
             move = unsorted_move_probs[np.random.choice(indexes, p=weights)][0]
 
         top_line = []
@@ -354,12 +353,9 @@ class MCTS:
         print(top_line)
         print()
 
-        return move, move_probs, self.root
+        return move, move_probs
 
     def update_tree(self, game, move):
-        if self.domain:
-            raise ValueError(f"Wrong Update method, use update_tree_domain")
-
         del self.game
         self.game = deepcopy(game)
         # Add a node if the
@@ -383,7 +379,7 @@ class MCTS:
             raise ValueError(f"Couldn't prune because node.move_history != game.moves")
         gc.collect()
 
-    def update_tree_domain(self, game, move, domain_key=None):
+    def update_tree_domain(self, game, move, domain_key=None, delta=None):
         if domain_key is None or self.domain is None:
             raise ValueError(
                 f"Wrong Update method, use update_tree without the domain if domain key is {domain_key} and self.domain is {self.domain} ")
@@ -400,13 +396,15 @@ class MCTS:
         chosen_node = None
         for node_id, node in enumerate(self.root.children):
             if move == node.move:
-                chosen_node = self.root.children.pop(node_id)
+                chosen_node = node
+                if node.is_terminal is None:  # This is correct as node.is_terminal is a int literal
+                    chosen_node = self.root.children.pop(node_id)
                 break
         if chosen_node is None:
             raise ValueError(f"The played move wasn't in the root's children")
         # self.root.children shouldn't have the chosen node anymore
 
-        self.domain.update_domain(tree_root=self.root, chosen_node=chosen_node, key=domain_key)
+        self.domain.update_domain(tree_root=self.root, chosen_node=chosen_node, key=domain_key, delta=delta)
         gc.collect()
 
         self.root = chosen_node
@@ -414,7 +412,7 @@ class MCTS:
 
 
 # pseudo code
-# we define self.domain to be
+# we define self.domains to be
 
 if __name__ == "__main__":
     from glob import glob
@@ -452,4 +450,4 @@ if __name__ == "__main__":
     game.print_board()
     mcts1 = MCTS(game=game, session=session,
                  c_puct=4, explore=False)
-    print(mcts1.run(iteration_limit=500))
+    print(mcts1.run(iteration_limit=100))
